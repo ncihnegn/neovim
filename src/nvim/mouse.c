@@ -657,16 +657,17 @@ static linenr_T find_longest_lnum(void)
   return ret;
 }
 
+// CUSTOM_UI begin
 ///
 /// Do a horizontal scroll.  Return TRUE if the cursor moved, FALSE otherwise.
+/// Use step to set the lines to scroll.
 ///
-bool mouse_scroll_horiz(int dir)
+bool mouse_scroll_horiz_step(int dir, int step)
 {
   if (curwin->w_p_wrap) {
       return false;
   }
 
-  int step = 6;
   if (mod_mask & (MOD_MASK_SHIFT | MOD_MASK_CTRL)) {
       step = curwin->w_width_inner;
   }
@@ -692,6 +693,12 @@ bool mouse_scroll_horiz(int dir)
 
   return leftcol_changed();
 }
+
+bool mouse_scroll_horiz(int dir)
+{
+  return mouse_scroll_horiz_step(dir, 6);
+}
+// CUSTOM_UI end
 
 /// Adjusts the clicked column position when 'conceallevel' > 0
 static int mouse_adjust_click(win_T *wp, int row, int col)

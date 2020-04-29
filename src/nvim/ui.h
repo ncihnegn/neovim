@@ -68,6 +68,11 @@ struct ui_t {
   void (*inspect)(UI *ui, Dictionary *info);
 };
 
+#ifdef CUSTOM_UI
+extern void custom_ui_start(void);
+extern void custom_ui_rpcevent_subscribed(void);
+#endif
+
 #ifdef INCLUDE_GENERATED_DECLARATIONS
 # include "ui.h.generated.h"
 # include "ui_events_call.h.generated.h"

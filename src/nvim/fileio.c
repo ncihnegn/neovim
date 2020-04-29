@@ -6702,6 +6702,22 @@ bool trigger_cursorhold(void) FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
 /// @param event the autocommand to check
 bool has_event(event_T event) FUNC_ATTR_PURE FUNC_ATTR_WARN_UNUSED_RESULT
 {
+  switch (event) {
+    case EVENT_TEXTCHANGED:
+    case EVENT_TEXTCHANGEDI:
+    case EVENT_BUFWRITEPOST:
+    case EVENT_BUFENTER:
+    case EVENT_BUFLEAVE:
+    case EVENT_DIRCHANGED:
+    case EVENT_BUFWINENTER:
+    case EVENT_BUFWINLEAVE:
+    case EVENT_TABENTER:
+    case EVENT_COLORSCHEME:
+    case EVENT_BUFREADPOST:
+    case EVENT_GUIENTER:
+      return true;
+  }
+  
   return first_autopat[event] != NULL;
 }
 
@@ -6744,6 +6760,10 @@ static bool apply_autocmds_group(event_T event, char_u *fname, char_u *fname_io,
   bool did_save_redobuff = false;
   save_redo_T save_redo;
   const bool save_KeyTyped = KeyTyped;
+
+#ifdef CUSTOM_UI
+  custom_ui_autocmds_groups(event, fname, fname_io, group, force, buf, eap);
+#endif
 
   // Quickly return if there are no autocommands for this event or
   // autocommands are blocked.
@@ -7061,7 +7081,7 @@ static bool apply_autocmds_group(event_T event, char_u *fname, char_u *fname_io,
   }
 
   au_cleanup();         /* may really delete removed patterns/commands now */
-
+  
 BYPASS_AU:
   /* When wiping out a buffer make sure all its buffer-local autocommands
    * are deleted. */

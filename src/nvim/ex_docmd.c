@@ -6634,6 +6634,10 @@ static void ex_hide(exarg_T *eap)
 /// ":stop" and ":suspend": Suspend Vim.
 static void ex_stop(exarg_T *eap)
 {
+#ifdef CUSTOM_UI
+  return;
+#endif
+  
   // Disallow suspending in restricted mode (-Z)
   if (!check_restricted()) {
     if (!eap->forceit) {
@@ -7670,6 +7674,7 @@ static void do_exmap(exarg_T *eap, int isabbrev)
   }
 }
 
+#ifndef CUSTOM_UI
 /*
  * ":winsize" command (obsolete).
  */
@@ -7686,6 +7691,7 @@ static void ex_winsize(exarg_T *eap)
     EMSG(_("E465: :winsize requires two number arguments"));
   }
 }
+#endif
 
 static void ex_wincmd(exarg_T *eap)
 {

@@ -33,6 +33,7 @@
 #include "nvim/os/signal.h"
 #include "nvim/popupmnu.h"
 #include "nvim/screen.h"
+#include "nvim/state.h"
 #include "nvim/highlight.h"
 #include "nvim/ui_compositor.h"
 #include "nvim/window.h"
@@ -114,6 +115,9 @@ void ui_builtin_start(void)
 {
 #ifdef FEAT_TUI
   tui_start();
+#elif defined CUSTOM_UI
+  DLOG("Starting custom UI");
+  custom_ui_start();
 #else
   fprintf(stderr, "Nvim headless-mode started.\n");
   size_t len;

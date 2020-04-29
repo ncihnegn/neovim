@@ -49,6 +49,7 @@
 #endif
 
 #cmakedefine FEAT_TUI
+#cmakedefine CUSTOM_UI
 
 #ifndef UNIT_TESTING
 #cmakedefine LOG_LIST_ACTIONS

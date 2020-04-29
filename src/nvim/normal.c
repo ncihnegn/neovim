@@ -6449,6 +6449,10 @@ static void nv_visual(cmdarg_T *cap)
       }
     }
   }
+
+  // CUSTOM_UI begin
+  ui_cursor_shape();
+  // CUSTOM_UI end
 }
 
 /*

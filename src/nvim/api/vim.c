@@ -49,6 +49,7 @@
 #include "nvim/viml/parser/expressions.h"
 #include "nvim/viml/parser/parser.h"
 #include "nvim/ui.h"
+#include "nvim/undo.h"
 
 #define LINE_BUFFER_SIZE 4096
 
@@ -1434,6 +1435,12 @@ void nvim_subscribe(uint64_t channel_id, String event)
   memcpy(e, event.data, length);
   e[length] = NUL;
   rpc_subscribe(channel_id, e);
+
+#ifdef CUSTOM_UI
+  if (strncmp("com.qvacua.NvimView", event.data, 19) == 0) {
+    custom_ui_rpcevent_subscribed();
+  }
+#endif
 }
 
 /// Unsubscribes to event broadcasts.
@@ -2615,4 +2622,18 @@ void nvim__put_attr(Integer id, Integer start_row, Integer start_col,
   }
   decorations_add_luahl_attr(attr, (int)start_row, (colnr_T)start_col,
                              (int)end_row, (colnr_T)end_col);
+}
+
+// CUSTOM_UI
+// Dirty status
+Boolean nvim_get_dirty_status(void)
+  FUNC_API_SINCE(4)
+{
+  FOR_ALL_BUFFERS(buffer) {
+    if (bufIsChanged(buffer)) {
+      return true;
+    }
+  }
+
+  return false;
 }

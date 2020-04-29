@@ -998,21 +998,23 @@ static int insert_handle_key(InsertState *s)
     ins_mouse(s->c);
     break;
 
+  // CUSTOM_UI begin
   case K_MOUSEDOWN:   // Default action for scroll wheel up: scroll up
-    ins_mousescroll(MSCR_DOWN);
+    ins_mousescroll(MSCR_DOWN, 3);
     break;
 
   case K_MOUSEUP:     // Default action for scroll wheel down: scroll down
-    ins_mousescroll(MSCR_UP);
+    ins_mousescroll(MSCR_UP, 3);
     break;
 
   case K_MOUSELEFT:   // Scroll wheel left
-    ins_mousescroll(MSCR_LEFT);
+    ins_mousescroll(MSCR_LEFT, 6);
     break;
 
   case K_MOUSERIGHT:  // Scroll wheel right
-    ins_mousescroll(MSCR_RIGHT);
+    ins_mousescroll(MSCR_RIGHT, 6);
     break;
+  // CUSTOM_UI end
 
   case K_IGNORE:      // Something mapped to nothing
     break;
@@ -8294,7 +8296,15 @@ static void ins_mouse(int c)
   redraw_statuslines();
 }
 
-static void ins_mousescroll(int dir)
+// CUSTOM_UI begin
+void custom_ui_scroll(int dir, int count, int row, int col) {
+  mouse_row = row;
+  mouse_col = col;
+
+  ins_mousescroll(dir, count);
+}
+
+static void ins_mousescroll(int dir, int count)
 {
   win_T *const old_curwin = curwin;
   pos_T tpos = curwin->w_cursor;
@@ -8322,9 +8332,9 @@ static void ins_mousescroll(int dir)
         scroll_redraw(dir,
             (long)(curwin->w_botline - curwin->w_topline));
       else
-        scroll_redraw(dir, 3L);
+        scroll_redraw(dir, count);
     } else {
-        mouse_scroll_horiz(dir);
+        mouse_scroll_horiz_step(dir, count);
     }
   }
 
@@ -8338,6 +8348,7 @@ static void ins_mousescroll(int dir)
     can_cindent = true;
   }
 }
+// CUSTOM_UI end
 
 
 

@@ -34,4 +34,11 @@ typedef struct {
 # include "auevents_enum.generated.h"
 # include "fileio.h.generated.h"
 #endif
+
+#ifdef CUSTOM_UI
+extern void custom_ui_autocmds_groups(
+    event_T event, char_u *fname, char_u *fname_io, int group,
+    bool force, buf_T *buf, exarg_T *eap
+);
+#endif
 #endif  // NVIM_FILEIO_H

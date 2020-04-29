@@ -51,6 +51,7 @@
 #include "nvim/profile.h"
 #include "nvim/popupmnu.h"
 #include "nvim/quickfix.h"
+
 #include "nvim/screen.h"
 #include "nvim/sign.h"
 #include "nvim/state.h"
@@ -353,7 +354,19 @@ int main(int argc, char **argv)
   }
 
   // Wait for UIs to set up Nvim or show early messages
+  // give embedders a chance to set up nvim, by processing a request before
+  // startup. This allows an external UI to show messages and prompts from
+  // --cmd and buffer loading (e.g. swap files)
   // and prompts (--cmd, swapfile dialog, …).
+#ifdef CUSTOM_UI
+  bool use_remote_ui = false;
+  bool use_builtin_ui = true;
+  ui_builtin_start();
+  // prepare screen now, so external UIs can display messages
+  starting = NO_BUFFERS;
+  screenclear();
+  TIME_MSG("initialized screen early for UI");
+#else
   bool use_remote_ui = (embedded_mode && !headless_mode);
   bool use_builtin_ui = (!headless_mode && !embedded_mode && !silent_mode);
   if (use_remote_ui || use_builtin_ui) {
@@ -370,6 +383,7 @@ int main(int argc, char **argv)
     screenclear();
     TIME_MSG("initialized screen early for UI");
   }
+#endif
 
   // Execute --cmd arguments.
   exe_pre_commands(&params);
@@ -1288,6 +1302,11 @@ static void init_startuptime(mparm_T *paramp)
 
 static void check_and_set_isatty(mparm_T *paramp)
 {
+#ifdef CUSTOM_UI
+  paramp->input_isatty = false;
+  paramp->output_isatty = false;
+  paramp->err_isatty = false;
+#else
   stdin_isatty
     = paramp->input_isatty = os_isatty(STDIN_FILENO);
   stdout_isatty
@@ -1302,6 +1321,7 @@ static void check_and_set_isatty(mparm_T *paramp)
   pty_process_save_termios(tty_fd);
 #endif
   TIME_MSG("window checked");
+#endif
 }
 
 // Sets v:progname and v:progpath. Also modifies $PATH on Windows.
