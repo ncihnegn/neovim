@@ -533,6 +533,7 @@ function lsp.start_client(config)
       or (not client.resolved_capabilities.goto_definition and method == 'textDocument/definition')
       or (not client.resolved_capabilities.implementation and method == 'textDocument/implementation')
       or (not client.resolved_capabilities.document_symbol and method == 'textDocument/documentSymbol')
+      or (not client.resolved_capabilities.workspace_symbol and method == 'textDocument/workspaceSymbol')
     then
       callback(unsupported_method(method), method, nil, client_id, bufnr)
       return
@@ -1024,10 +1025,10 @@ do
       vim.fn.sign_define(name, properties)
     end
   end
-  define_default_sign('LspDiagnosticsErrorSign', {text='E', texthl='LspDiagnosticsError', linehl='', numhl=''})
-  define_default_sign('LspDiagnosticsWarningSign', {text='W', texthl='LspDiagnosticsWarning', linehl='', numhl=''})
-  define_default_sign('LspDiagnosticsInformationSign', {text='I', texthl='LspDiagnosticsInformation', linehl='', numhl=''})
-  define_default_sign('LspDiagnosticsHintSign', {text='H', texthl='LspDiagnosticsHint', linehl='', numhl=''})
+  define_default_sign('LspDiagnosticsErrorSign', {text='E', texthl='LspDiagnosticsErrorSign', linehl='', numhl=''})
+  define_default_sign('LspDiagnosticsWarningSign', {text='W', texthl='LspDiagnosticsWarningSign', linehl='', numhl=''})
+  define_default_sign('LspDiagnosticsInformationSign', {text='I', texthl='LspDiagnosticsInformationSign', linehl='', numhl=''})
+  define_default_sign('LspDiagnosticsHintSign', {text='H', texthl='LspDiagnosticsHintSign', linehl='', numhl=''})
 end
 
 return lsp

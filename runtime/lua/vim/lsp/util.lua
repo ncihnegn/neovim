@@ -96,16 +96,28 @@ end)
 
 function M.apply_text_edits(text_edits, bufnr)
   if not next(text_edits) then return end
+  if not api.nvim_buf_is_loaded(bufnr) then
+    vim.fn.bufload(bufnr)
+  end
   local start_line, finish_line = math.huge, -1
   local cleaned = {}
   for i, e in ipairs(text_edits) do
+    -- adjust start and end column for UTF-16 encoding of non-ASCII characters
+    local start_row = e.range.start.line
+    local start_col = e.range.start.character
+    local start_bline = api.nvim_buf_get_lines(bufnr, start_row, start_row+1, true)[1]
+    start_col = vim.str_byteindex(start_bline, start_col)
+    local end_row = e.range["end"].line
+    local end_col = e.range["end"].character
+    local end_bline = api.nvim_buf_get_lines(bufnr, end_row, end_row+1, true)[1]
+    end_col = vim.str_byteindex(end_bline, end_col)
     start_line = math.min(e.range.start.line, start_line)
     finish_line = math.max(e.range["end"].line, finish_line)
     -- TODO(ashkan) sanity check ranges for overlap.
     table.insert(cleaned, {
       i = i;
-      A = {e.range.start.line; e.range.start.character};
-      B = {e.range["end"].line; e.range["end"].character};
+      A = {start_row; start_col};
+      B = {end_row; end_col};
       lines = vim.split(e.newText, '\n', true);
     })
   end
@@ -113,9 +125,6 @@ function M.apply_text_edits(text_edits, bufnr)
   -- Reverse sort the orders so we can apply them without interfering with
   -- eachother. Also add i as a sort key to mimic a stable sort.
   table.sort(cleaned, edit_sort_key)
-  if not api.nvim_buf_is_loaded(bufnr) then
-    vim.fn.bufload(bufnr)
-  end
   local lines = api.nvim_buf_get_lines(bufnr, start_line, finish_line + 1, false)
   local fix_eol = api.nvim_buf_get_option(bufnr, 'fixeol')
   local set_eol = fix_eol and api.nvim_buf_line_count(bufnr) <= finish_line + 1
@@ -159,10 +168,12 @@ end
 function M.apply_text_document_edit(text_document_edit)
   local text_document = text_document_edit.textDocument
   local bufnr = vim.uri_to_bufnr(text_document.uri)
-  -- `VersionedTextDocumentIdentifier`s version may be nil https://microsoft.github.io/language-server-protocol/specification#versionedTextDocumentIdentifier
-  if text_document.version ~= nil and M.buf_versions[bufnr] > text_document.version then
-    print("Buffer ", text_document.uri, " newer than edits.")
-    return
+  if text_document.version then
+    -- `VersionedTextDocumentIdentifier`s version may be null https://microsoft.github.io/language-server-protocol/specification#versionedTextDocumentIdentifier
+    if text_document.version ~= vim.NIL and M.buf_versions[bufnr] ~= nil and M.buf_versions[bufnr] > text_document.version then
+      print("Buffer ", text_document.uri, " newer than edits.")
+      return
+    end
   end
   M.apply_text_edits(text_document_edit.edits, bufnr)
 end
@@ -203,6 +214,13 @@ local function remove_unmatch_completion_items(items, prefix)
   end, items)
 end
 
+-- Acording to LSP spec, if the client set "completionItemKind.valueSet",
+-- the client must handle it properly even if it receives a value outside the specification.
+-- https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_completion
+function M._get_completion_item_kind_name(completion_item_kind)
+  return protocol.CompletionItemKind[completion_item_kind] or "Unknown"
+end
+
 --- Getting vim complete-items with incomplete flag.
 -- @params CompletionItem[], CompletionList or nil (https://microsoft.github.io/language-server-protocol/specification#textDocument_completion)
 -- @return { matches = complete-items table, incomplete = boolean  }
@@ -234,12 +252,19 @@ function M.text_document_completion_list_to_complete_items(result, prefix)
     table.insert(matches, {
       word = word,
       abbr = completion_item.label,
-      kind = protocol.CompletionItemKind[completion_item.kind] or '',
+      kind = M._get_completion_item_kind_name(completion_item.kind),
       menu = completion_item.detail or '',
       info = info,
       icase = 1,
       dup = 1,
       empty = 1,
+      user_data = {
+        nvim = {
+          lsp = {
+            completion_item = completion_item
+          }
+        }
+      },
     })
   end
 
@@ -417,20 +442,24 @@ function M.make_floating_popup_options(width, height, opts)
 end
 
 function M.jump_to_location(location)
-  if location.uri == nil then return end
-  local bufnr = vim.uri_to_bufnr(location.uri)
+  -- location may be Location or LocationLink
+  local uri = location.uri or location.targetUri
+  if uri == nil then return end
+  local bufnr = vim.uri_to_bufnr(uri)
   -- Save position in jumplist
   vim.cmd "normal! m'"
 
   -- Push a new item into tagstack
-  local items = {}
-  table.insert(items, {tagname=vim.fn.expand("<cword>"), from=vim.fn.getpos('.')})
-  vim.fn.settagstack(vim.fn.bufnr('%'), {items=items}, 't')
+  local from = {vim.fn.bufnr('%'), vim.fn.line('.'), vim.fn.col('.'), 0}
+  local items = {{tagname=vim.fn.expand('<cword>'), from=from}}
+  vim.fn.settagstack(vim.fn.win_getid(), {items=items}, 't')
 
-  --- Jump to new location
+  --- Jump to new location (adjusting for UTF-16 encoding of characters)
   api.nvim_set_current_buf(bufnr)
-  local row = location.range.start.line
-  local col = location.range.start.character
+  api.nvim_buf_set_option(0, 'buflisted', true)
+  local range = location.range or location.targetSelectionRange
+  local row = range.start.line
+  local col = range.start.character
   local line = api.nvim_buf_get_lines(0, row, row+1, true)[1]
   col = vim.str_byteindex(line, col)
   api.nvim_win_set_cursor(0, {row + 1, col})
@@ -672,6 +701,7 @@ do
       table.insert(cmd_parts, k.."="..v)
     end
     api.nvim_command(table.concat(cmd_parts, ' '))
+    api.nvim_command('highlight link ' .. highlight_name .. 'Sign ' .. highlight_name)
     severity_highlights[severity] = highlight_name
   end
 
@@ -690,19 +720,28 @@ do
     return severity_highlights[severity]
   end
 
-  function M.show_line_diagnostics()
+  function M.get_line_diagnostics()
     local bufnr = api.nvim_get_current_buf()
-    local line = api.nvim_win_get_cursor(0)[1] - 1
+    local linenr = api.nvim_win_get_cursor(0)[1] - 1
+
+    local buffer_diagnostics = M.diagnostics_by_buf[bufnr]
+
+    if not buffer_diagnostics then
+      return {}
+    end
+
+    local diagnostics_by_line = M.diagnostics_group_by_line(buffer_diagnostics)
+    return diagnostics_by_line[linenr] or {}
+  end
+
+  function M.show_line_diagnostics()
     -- local marks = api.nvim_buf_get_extmarks(bufnr, diagnostic_ns, {line, 0}, {line, -1}, {})
     -- if #marks == 0 then
     --   return
     -- end
     local lines = {"Diagnostics:"}
     local highlights = {{0, "Bold"}}
-
-    local buffer_diagnostics = M.diagnostics_by_buf[bufnr]
-    if not buffer_diagnostics then return end
-    local line_diagnostics = M.diagnostics_group_by_line(buffer_diagnostics)[line]
+    local line_diagnostics = M.get_line_diagnostics()
     if not line_diagnostics then return end
 
     for i, diagnostic in ipairs(line_diagnostics) do
@@ -868,9 +907,11 @@ function M.locations_to_items(locations)
     end;
   })
   for _, d in ipairs(locations) do
-    local start = d.range.start
-    local fname = assert(vim.uri_to_fname(d.uri))
-    table.insert(grouped[fname], {start = start})
+    -- locations may be Location or LocationLink
+    local uri = d.uri or d.targetUri
+    local fname = assert(vim.uri_to_fname(uri))
+    local range = d.range or d.targetSelectionRange
+    table.insert(grouped[fname], {start = range.start})
   end
 
 
@@ -921,6 +962,13 @@ function M.set_qflist(items)
   })
 end
 
+-- Acording to LSP spec, if the client set "symbolKind.valueSet",
+-- the client must handle it properly even if it receives a value outside the specification.
+-- https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_documentSymbol
+function M._get_symbol_kind_name(symbol_kind)
+  return protocol.SymbolKind[symbol_kind] or "Unknown"
+end
+
 --- Convert symbols to quickfix list items
 ---
 --@symbols DocumentSymbol[] or SymbolInformation[]
@@ -929,7 +977,7 @@ function M.symbols_to_items(symbols, bufnr)
     for _, symbol in ipairs(_symbols) do
       if symbol.location then -- SymbolInformation type
         local range = symbol.location.range
-        local kind = protocol.SymbolKind[symbol.kind]
+        local kind = M._get_symbol_kind_name(symbol.kind)
         table.insert(_items, {
           filename = vim.uri_to_fname(symbol.location.uri),
           lnum = range.start.line + 1,
@@ -938,7 +986,7 @@ function M.symbols_to_items(symbols, bufnr)
           text = '['..kind..'] '..symbol.name,
         })
       elseif symbol.range then -- DocumentSymbole type
-        local kind = protocol.SymbolKind[symbol.kind]
+        local kind = M._get_symbol_kind_name(symbol.kind)
         table.insert(_items, {
           -- bufnr = _bufnr,
           filename = vim.api.nvim_buf_get_name(_bufnr),
@@ -948,10 +996,8 @@ function M.symbols_to_items(symbols, bufnr)
           text = '['..kind..'] '..symbol.name
         })
         if symbol.children then
-          for _, child in ipairs(symbol) do
-            for _, v in ipairs(_symbols_to_items(child, _items, _bufnr)) do
-              vim.list_extend(_items, v)
-            end
+          for _, v in ipairs(_symbols_to_items(symbol.children, _items, _bufnr)) do
+            vim.list_extend(_items, v)
           end
         end
       end
@@ -1007,14 +1053,26 @@ function M.try_trim_markdown_code_blocks(lines)
 end
 
 local str_utfindex = vim.str_utfindex
-function M.make_position_params()
+local function make_position_param()
   local row, col = unpack(api.nvim_win_get_cursor(0))
   row = row - 1
   local line = api.nvim_buf_get_lines(0, row, row+1, true)[1]
   col = str_utfindex(line, col)
+  return { line = row; character = col; }
+end
+
+function M.make_position_params()
   return {
     textDocument = M.make_text_document_params();
-    position = { line = row; character = col; }
+    position = make_position_param()
+  }
+end
+
+function M.make_range_params()
+  local position = make_position_param()
+  return {
+    textDocument = { uri = vim.uri_from_bufnr(0) },
+    range = { start = position; ["end"] = position; }
   }
 end
 
