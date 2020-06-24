@@ -569,20 +569,21 @@ readfile(
           return FAIL;
         }
       }
-      if (dir_of_file_exists(fname))
-        filemess(curbuf, sfname, (char_u *)_("[New File]"), 0);
-      else
-        filemess(curbuf, sfname,
-            (char_u *)_("[New DIRECTORY]"), 0);
-      /* Even though this is a new file, it might have been
-       * edited before and deleted.  Get the old marks. */
+      if (dir_of_file_exists(fname)) {
+        filemess(curbuf, sfname, (char_u *)new_file_message(), 0);
+      } else {
+        filemess(curbuf, sfname, (char_u *)_("[New DIRECTORY]"), 0);
+      }
+      // Even though this is a new file, it might have been
+      // edited before and deleted.  Get the old marks.
       check_marks_read();
-      /* Set forced 'fileencoding'.  */
-      if (eap != NULL)
+      // Set forced 'fileencoding'.
+      if (eap != NULL) {
         set_forced_fenc(eap);
+      }
       apply_autocmds_exarg(EVENT_BUFNEWFILE, sfname, sfname,
-          FALSE, curbuf, eap);
-      /* remember the current fileformat */
+                           false, curbuf, eap);
+      // remember the current fileformat
       save_file_ff(curbuf);
 
       if (aborting())               /* autocmds may abort script processing */
@@ -2203,6 +2204,11 @@ static void check_marks_read(void)
   curbuf->b_marks_read = true;
 }
 
+char *new_file_message(void)
+{
+  return shortmess(SHM_NEW) ? _("[New]") : _("[New File]");
+}
+
 /*
  * buf_write() - write to file "fname" lines "start" through "end"
  *
@@ -3513,8 +3519,8 @@ restore_backup:
       STRCAT(IObuff, _("[Device]"));
       c = TRUE;
     } else if (newfile) {
-      STRCAT(IObuff, shortmess(SHM_NEW) ? _("[New]") : _("[New File]"));
-      c = TRUE;
+      STRCAT(IObuff, new_file_message());
+      c = true;
     }
     if (no_eol) {
       msg_add_eol();
@@ -6752,7 +6758,6 @@ static bool apply_autocmds_group(event_T event, char_u *fname, char_u *fname_io,
   static int nesting = 0;
   AutoPatCmd patcmd;
   AutoPat     *ap;
-  void        *save_funccalp;
   char_u      *save_cmdarg;
   long save_cmdbang;
   static int filechangeshell_busy = FALSE;
@@ -6946,8 +6951,9 @@ static bool apply_autocmds_group(event_T event, char_u *fname, char_u *fname_io,
   if (do_profiling == PROF_YES)
     prof_child_enter(&wait_time);     /* doesn't count for the caller itself */
 
-  /* Don't use local function variables, if called from a function */
-  save_funccalp = save_funccal();
+  // Don't use local function variables, if called from a function.
+  funccal_entry_T funccal_entry;
+  save_funccal(&funccal_entry);
 
   /*
    * When starting to execute autocommands, save the search patterns.
@@ -7036,9 +7042,10 @@ static bool apply_autocmds_group(event_T event, char_u *fname, char_u *fname_io,
   autocmd_bufnr = save_autocmd_bufnr;
   autocmd_match = save_autocmd_match;
   current_sctx = save_current_sctx;
-  restore_funccal(save_funccalp);
-  if (do_profiling == PROF_YES)
+  restore_funccal();
+  if (do_profiling == PROF_YES) {
     prof_child_exit(&wait_time);
+  }
   KeyTyped = save_KeyTyped;
   xfree(fname);
   xfree(sfname);

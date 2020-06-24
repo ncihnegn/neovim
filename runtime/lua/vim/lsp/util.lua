@@ -3,6 +3,7 @@ local vim = vim
 local validate = vim.validate
 local api = vim.api
 local list_extend = vim.list_extend
+local highlight = require 'vim.highlight'
 
 local M = {}
 
@@ -91,26 +92,42 @@ local function sort_by_key(fn)
   end
 end
 local edit_sort_key = sort_by_key(function(e)
-  return {e.A[1], e.A[2], e.i}
+  return {e.A[1], e.A[2], -e.i}
 end)
+
+--- Position is a https://microsoft.github.io/language-server-protocol/specifications/specification-current/#position
+-- Returns a zero-indexed column, since set_lines() does the conversion to
+-- 1-indexed
+local function get_line_byte_from_position(bufnr, position)
+  -- LSP's line and characters are 0-indexed
+  -- Vim's line and columns are 1-indexed
+  local col = position.character
+  -- When on the first character, we can ignore the difference between byte and
+  -- character
+  if col > 0 then
+    local line = position.line
+    local lines = api.nvim_buf_get_lines(bufnr, line, line + 1, false)
+    if #lines > 0 then
+      return vim.str_byteindex(lines[1], col)
+    end
+  end
+  return col
+end
 
 function M.apply_text_edits(text_edits, bufnr)
   if not next(text_edits) then return end
   if not api.nvim_buf_is_loaded(bufnr) then
     vim.fn.bufload(bufnr)
   end
+  api.nvim_buf_set_option(bufnr, 'buflisted', true)
   local start_line, finish_line = math.huge, -1
   local cleaned = {}
   for i, e in ipairs(text_edits) do
     -- adjust start and end column for UTF-16 encoding of non-ASCII characters
     local start_row = e.range.start.line
-    local start_col = e.range.start.character
-    local start_bline = api.nvim_buf_get_lines(bufnr, start_row, start_row+1, true)[1]
-    start_col = vim.str_byteindex(start_bline, start_col)
+    local start_col = get_line_byte_from_position(bufnr, e.range.start)
     local end_row = e.range["end"].line
-    local end_col = e.range["end"].character
-    local end_bline = api.nvim_buf_get_lines(bufnr, end_row, end_row+1, true)[1]
-    end_col = vim.str_byteindex(end_bline, end_col)
+    local end_col = get_line_byte_from_position(bufnr, e.range['end'])
     start_line = math.min(e.range.start.line, start_line)
     finish_line = math.max(e.range["end"].line, finish_line)
     -- TODO(ashkan) sanity check ranges for overlap.
@@ -184,6 +201,66 @@ function M.get_current_line_to_cursor()
   return line:sub(pos[2]+1)
 end
 
+local function parse_snippet_rec(input, inner)
+  local res = ""
+
+  local close, closeend = nil, nil
+  if inner then
+    close, closeend = input:find("}", 1, true)
+    while close ~= nil and input:sub(close-1,close-1) == "\\" do
+      close, closeend = input:find("}", closeend+1, true)
+    end
+  end
+
+  local didx = input:find('$',  1, true)
+  if didx == nil and close == nil then
+    return input, ""
+  elseif close ~=nil and (didx == nil or close < didx) then
+    -- No inner placeholders
+    return input:sub(0, close-1), input:sub(closeend+1)
+  end
+
+  res = res .. input:sub(0, didx-1)
+  input = input:sub(didx+1)
+
+  local tabstop, tabstopend = input:find('^%d+')
+  local placeholder, placeholderend = input:find('^{%d+:')
+  local choice, choiceend = input:find('^{%d+|')
+
+  if tabstop then
+    input = input:sub(tabstopend+1)
+  elseif choice then
+    input = input:sub(choiceend+1)
+    close, closeend = input:find("|}", 1, true)
+
+    res = res .. input:sub(0, close-1)
+    input = input:sub(closeend+1)
+  elseif placeholder then
+    -- TODO: add support for variables
+    input = input:sub(placeholderend+1)
+
+    -- placeholders and variables are recursive
+    while input ~= "" do
+      local r, tail = parse_snippet_rec(input, true)
+      r = r:gsub("\\}", "}")
+
+      res = res .. r
+      input = tail
+    end
+  else
+    res = res .. "$"
+  end
+
+  return res, input
+end
+
+-- Parse completion entries, consuming snippet tokens
+function M.parse_snippet(input)
+  local res, _ = parse_snippet_rec(input, false)
+
+  return res
+end
+
 -- Sort by CompletionItem.sortText
 -- https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_completion
 local function sort_completion_items(items)
@@ -198,14 +275,22 @@ end
 -- https://microsoft.github.io/language-server-protocol/specifications/specification-current/#textDocument_completion
 local function get_completion_word(item)
   if item.textEdit ~= nil and item.textEdit.newText ~= nil then
-    return item.textEdit.newText
+    if protocol.InsertTextFormat[item.insertTextFormat] == "PlainText" then
+      return item.textEdit.newText
+    else
+      return M.parse_snippet(item.textEdit.newText)
+    end
   elseif item.insertText ~= nil then
-    return item.insertText
+    if protocol.InsertTextFormat[item.insertTextFormat] == "PlainText" then
+      return item.insertText
+    else
+      return M.parse_snippet(item.insertText)
+    end
   end
   return item.label
 end
 
--- Some lanuguage servers return complementary candidates whose prefixes do not match are also returned.
+-- Some language servers return complementary candidates whose prefixes do not match are also returned.
 -- So we exclude completion candidates whose prefix does not match.
 local function remove_unmatch_completion_items(items, prefix)
   return vim.tbl_filter(function(item)
@@ -459,11 +544,31 @@ function M.jump_to_location(location)
   api.nvim_buf_set_option(0, 'buflisted', true)
   local range = location.range or location.targetSelectionRange
   local row = range.start.line
-  local col = range.start.character
-  local line = api.nvim_buf_get_lines(0, row, row+1, true)[1]
-  col = vim.str_byteindex(line, col)
+  local col = get_line_byte_from_position(0, range.start)
   api.nvim_win_set_cursor(0, {row + 1, col})
   return true
+end
+
+--- Preview a location in a floating windows
+---
+--- behavior depends on type of location:
+---   - for Location, range is shown (e.g., function definition)
+---   - for LocationLink, targetRange is shown (e.g., body of function definition)
+---
+--@param location a single Location or LocationLink
+--@return bufnr,winnr buffer and window number of floating window or nil
+function M.preview_location(location)
+  -- location may be LocationLink or Location (more useful for the former)
+  local uri = location.targetUri or location.uri
+  if uri == nil then return end
+  local bufnr = vim.uri_to_bufnr(uri)
+  if not api.nvim_buf_is_loaded(bufnr) then
+    vim.fn.bufload(bufnr)
+  end
+  local range = location.targetRange or location.range
+  local contents = api.nvim_buf_get_lines(bufnr, range.start.line, range["end"].line+1, false)
+  local filetype = api.nvim_buf_get_option(bufnr, 'filetype')
+  return M.open_floating_preview(contents, filetype)
 end
 
 local function find_window_by_var(name, value)
@@ -510,13 +615,53 @@ function M.focusable_preview(unique_name, fn)
   end)
 end
 
--- Convert markdown into syntax highlighted regions by stripping the code
--- blocks and converting them into highlighted code.
--- This will by default insert a blank line separator after those code block
--- regions to improve readability.
+--- Trim empty lines from input and pad left and right with spaces
+---
+--@param contents table of lines to trim and pad
+--@param opts dictionary with optional fields
+--             - pad_left  amount of columns to pad contents at left (default 1)
+--             - pad_right amount of columns to pad contents at right (default 1)
+--@return contents table of trimmed and padded lines
+function M._trim_and_pad(contents, opts)
+  validate {
+    contents = { contents, 't' };
+    opts = { opts, 't', true };
+  }
+  opts = opts or {}
+  local left_padding = (" "):rep(opts.pad_left or 1)
+  local right_padding = (" "):rep(opts.pad_right or 1)
+  contents = M.trim_empty_lines(contents)
+  for i, line in ipairs(contents) do
+    contents[i] = string.format('%s%s%s', left_padding, line:gsub("\r", ""), right_padding)
+  end
+  return contents
+end
+
+
+
+--- Convert markdown into syntax highlighted regions by stripping the code
+--- blocks and converting them into highlighted code.
+--- This will by default insert a blank line separator after those code block
+--- regions to improve readability.
+--- The result is shown in a floating preview
+--- TODO: refactor to separate stripping/converting and make use of open_floating_preview
+---
+--@param contents table of lines to show in window
+--@param opts dictionary with optional fields
+--             - height    of floating window
+--             - width     of floating window
+--             - wrap_at   character to wrap at for computing height
+--             - pad_left  amount of columns to pad contents at left
+--             - pad_right amount of columns to pad contents at right
+--             - separator insert separator after code block
+--@return width,height size of float
 function M.fancy_floating_markdown(contents, opts)
-  local pad_left = opts and opts.pad_left
-  local pad_right = opts and opts.pad_right
+  validate {
+    contents = { contents, 't' };
+    opts = { opts, 't', true };
+  }
+  opts = opts or {}
+
   local stripped = {}
   local highlights = {}
   do
@@ -550,31 +695,27 @@ function M.fancy_floating_markdown(contents, opts)
       end
     end
   end
-  local width = 0
-  for i, v in ipairs(stripped) do
-    v = v:gsub("\r", "")
-    if pad_left then v = (" "):rep(pad_left)..v end
-    if pad_right then v = v..(" "):rep(pad_right) end
-    stripped[i] = v
-    width = math.max(width, #v)
-  end
-  if opts and opts.max_width then
-    width = math.min(opts.max_width, width)
-  end
-  -- TODO(ashkan): decide how to make this customizable.
-  local insert_separator = true
+  -- Clean up and add padding
+  stripped = M._trim_and_pad(stripped, opts)
+
+  -- Compute size of float needed to show (wrapped) lines
+  opts.wrap_at = opts.wrap_at or (vim.wo["wrap"] and api.nvim_win_get_width(0))
+  local width, height = M._make_floating_popup_size(stripped, opts)
+
+  -- Insert blank line separator after code block
+  local insert_separator = opts.separator or true
   if insert_separator then
     for i, h in ipairs(highlights) do
       h.start = h.start + i - 1
       h.finish = h.finish + i - 1
       if h.finish + 1 <= #stripped then
         table.insert(stripped, h.finish + 1, string.rep("─", width))
+        height = height + 1
       end
     end
   end
 
   -- Make the floating window.
-  local height = #stripped
   local bufnr = api.nvim_create_buf(false, true)
   local winnr = api.nvim_open_win(bufnr, false, M.make_floating_popup_options(width, height, opts))
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, stripped)
@@ -586,7 +727,7 @@ function M.fancy_floating_markdown(contents, opts)
 
   vim.cmd("ownsyntax markdown")
   local idx = 1
-  local function highlight_region(ft, start, finish)
+  local function apply_syntax_to_region(ft, start, finish)
     if ft == '' then return end
     local name = ft..idx
     idx = idx + 1
@@ -602,8 +743,8 @@ function M.fancy_floating_markdown(contents, opts)
   -- make sure that regions between code blocks are definitely markdown.
   -- local ph = {start = 0; finish = 1;}
   for _, h in ipairs(highlights) do
-    -- highlight_region('markdown', ph.finish, h.start)
-    highlight_region(h.ft, h.start, h.finish)
+    -- apply_syntax_to_region('markdown', ph.finish, h.start)
+    apply_syntax_to_region(h.ft, h.start, h.finish)
     -- ph = h
   end
 
@@ -615,6 +756,66 @@ function M.close_preview_autocmd(events, winnr)
   api.nvim_command("autocmd "..table.concat(events, ',').." <buffer> ++once lua pcall(vim.api.nvim_win_close, "..winnr..", true)")
 end
 
+--- Compute size of float needed to show contents (with optional wrapping)
+---
+--@param contents table of lines to show in window
+--@param opts dictionary with optional fields
+--             - height  of floating window
+--             - width   of floating window
+--             - wrap_at character to wrap at for computing height
+--@return width,height size of float
+function M._make_floating_popup_size(contents, opts)
+  validate {
+    contents = { contents, 't' };
+    opts = { opts, 't', true };
+  }
+  opts = opts or {}
+
+  local width = opts.width
+  local height = opts.height
+  local line_widths = {}
+
+  if not width then
+    width = 0
+    for i, line in ipairs(contents) do
+      -- TODO(ashkan) use nvim_strdisplaywidth if/when that is introduced.
+      line_widths[i] = vim.fn.strdisplaywidth(line)
+      width = math.max(line_widths[i], width)
+    end
+  end
+
+  if not height then
+    height = #contents
+    local wrap_at = opts.wrap_at
+    if wrap_at and width > wrap_at then
+      height = 0
+      if vim.tbl_isempty(line_widths) then
+        for _, line in ipairs(contents) do
+          local line_width = vim.fn.strdisplaywidth(line)
+          height = height + math.ceil(line_width/wrap_at)
+        end
+      else
+        for i = 1, #contents do
+          height = height + math.ceil(line_widths[i]/wrap_at)
+        end
+      end
+    end
+  end
+
+  return width, height
+end
+
+--- Show contents in a floating window
+---
+--@param contents table of lines to show in window
+--@param filetype string of filetype to set for opened buffer
+--@param opts dictionary with optional fields
+--             - height    of floating window
+--             - width     of floating window
+--             - wrap_at   character to wrap at for computing height
+--             - pad_left  amount of columns to pad contents at left
+--             - pad_right amount of columns to pad contents at right
+--@return bufnr,winnr buffer and window number of floating window or nil
 function M.open_floating_preview(contents, filetype, opts)
   validate {
     contents = { contents, 't' };
@@ -623,24 +824,12 @@ function M.open_floating_preview(contents, filetype, opts)
   }
   opts = opts or {}
 
-  -- Trim empty lines from the end.
-  contents = M.trim_empty_lines(contents)
+  -- Clean up input: trim empty lines from the end, pad
+  contents = M._trim_and_pad(contents, opts)
 
-  local width = opts.width
-  local height = opts.height or #contents
-  if not width then
-    width = 0
-    for i, line in ipairs(contents) do
-      -- Clean up the input and add left pad.
-      line = " "..line:gsub("\r", "")
-      -- TODO(ashkan) use nvim_strdisplaywidth if/when that is introduced.
-      local line_width = vim.fn.strdisplaywidth(line)
-      width = math.max(line_width, width)
-      contents[i] = line
-    end
-    -- Add right padding of 1 each.
-    width = width + 1
-  end
+  -- Compute size of float needed to show (wrapped) lines
+  opts.wrap_at = opts.wrap_at or (vim.wo["wrap"] and api.nvim_win_get_width(0))
+  local width, height = M._make_floating_popup_size(contents, opts)
 
   local floating_bufnr = api.nvim_create_buf(false, true)
   if filetype then
@@ -653,21 +842,8 @@ function M.open_floating_preview(contents, filetype, opts)
   end
   api.nvim_buf_set_lines(floating_bufnr, 0, -1, true, contents)
   api.nvim_buf_set_option(floating_bufnr, 'modifiable', false)
-  M.close_preview_autocmd({"CursorMoved", "CursorMovedI", "BufHidden"}, floating_winnr)
+  M.close_preview_autocmd({"CursorMoved", "CursorMovedI", "BufHidden", "BufLeave"}, floating_winnr)
   return floating_bufnr, floating_winnr
-end
-
-local function highlight_range(bufnr, ns, hiname, start, finish)
-  if start[1] == finish[1] then
-    -- TODO care about encoding here since this is in byte index?
-    api.nvim_buf_add_highlight(bufnr, ns, hiname, start[1], start[2], finish[2])
-  else
-    api.nvim_buf_add_highlight(bufnr, ns, hiname, start[1], start[2], -1)
-    for line = start[1] + 1, finish[1] - 1 do
-      api.nvim_buf_add_highlight(bufnr, ns, hiname, line, 0, -1)
-    end
-    api.nvim_buf_add_highlight(bufnr, ns, hiname, finish[1], 0, finish[2])
-  end
 end
 
 do
@@ -684,6 +860,8 @@ do
 
   local severity_highlights = {}
 
+  local severity_floating_highlights = {}
+
   local default_severity_highlight = {
     [protocol.DiagnosticSeverity.Error] = { guifg = "Red" };
     [protocol.DiagnosticSeverity.Warning] = { guifg = "Orange" };
@@ -695,6 +873,7 @@ do
   for severity, hi_info in pairs(default_severity_highlight) do
     local severity_name = protocol.DiagnosticSeverity[severity]
     local highlight_name = "LspDiagnostics"..severity_name
+    local floating_highlight_name = highlight_name.."Floating"
     -- Try to fill in the foreground color with a sane default.
     local cmd_parts = {"highlight", "default", highlight_name}
     for k, v in pairs(hi_info) do
@@ -702,7 +881,9 @@ do
     end
     api.nvim_command(table.concat(cmd_parts, ' '))
     api.nvim_command('highlight link ' .. highlight_name .. 'Sign ' .. highlight_name)
+    api.nvim_command('highlight link ' .. highlight_name .. 'Floating ' .. highlight_name)
     severity_highlights[severity] = highlight_name
+    severity_floating_highlights[severity] = floating_highlight_name
   end
 
   function M.buf_clear_diagnostics(bufnr)
@@ -742,7 +923,7 @@ do
     local lines = {"Diagnostics:"}
     local highlights = {{0, "Bold"}}
     local line_diagnostics = M.get_line_diagnostics()
-    if not line_diagnostics then return end
+    if vim.tbl_isempty(line_diagnostics) then return end
 
     for i, diagnostic in ipairs(line_diagnostics) do
     -- for i, mark in ipairs(marks) do
@@ -751,7 +932,7 @@ do
 
       -- TODO(ashkan) make format configurable?
       local prefix = string.format("%d. ", i)
-      local hiname = severity_highlights[diagnostic.severity]
+      local hiname = severity_floating_highlights[diagnostic.severity]
       assert(hiname, 'unknown severity: ' .. tostring(diagnostic.severity))
       local message_lines = split_lines(diagnostic.message)
       table.insert(lines, prefix..message_lines[1])
@@ -803,8 +984,7 @@ do
         [protocol.DiagnosticSeverity.Hint]='Hint',
       }
 
-      -- TODO care about encoding here since this is in byte index?
-      highlight_range(bufnr, diagnostic_ns,
+      highlight.range(bufnr, diagnostic_ns,
         underline_highlight_name..hlmap[diagnostic.severity],
         {start.line, start.character},
         {finish.line, finish.character}
@@ -828,7 +1008,7 @@ do
         [protocol.DocumentHighlightKind.Write] = "LspReferenceWrite";
       }
       local kind = reference["kind"] or protocol.DocumentHighlightKind.Text
-      highlight_range(bufnr, reference_ns, document_highlight_kind[kind], start_pos, end_pos)
+      highlight.range(bufnr, reference_ns, document_highlight_kind[kind], start_pos, end_pos)
     end
   end
 

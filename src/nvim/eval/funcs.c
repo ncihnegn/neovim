@@ -93,6 +93,7 @@ PRAGMA_DIAG_POP
 
 static char *e_listarg = N_("E686: Argument of %s must be a List");
 static char *e_stringreq = N_("E928: String required");
+static char *e_invalwindow = N_("E957: Invalid window number");
 
 /// Dummy va_list for passing to vim_snprintf
 ///
@@ -174,8 +175,8 @@ static int non_zero_arg(typval_T *argvars)
 {
   return ((argvars[0].v_type == VAR_NUMBER
            && argvars[0].vval.v_number != 0)
-          || (argvars[0].v_type == VAR_SPECIAL
-              && argvars[0].vval.v_special == kSpecialVarTrue)
+          || (argvars[0].v_type == VAR_BOOL
+              && argvars[0].vval.v_bool == kBoolVarTrue)
           || (argvars[0].v_type == VAR_STRING
               && argvars[0].vval.v_string != NULL
               && *argvars[0].vval.v_string != NUL));
@@ -952,12 +953,30 @@ static void f_cindent(typval_T *argvars, typval_T *rettv, FunPtr fptr)
     rettv->vval.v_number = -1;
 }
 
+static win_T * get_optional_window(typval_T *argvars, int idx)
+{
+  win_T *win = curwin;
+
+  if (argvars[idx].v_type != VAR_UNKNOWN) {
+    win = find_win_by_nr_or_id(&argvars[idx]);
+    if (win == NULL) {
+      EMSG(_(e_invalwindow));
+      return NULL;
+    }
+  }
+  return win;
+}
+
 /*
  * "clearmatches()" function
  */
 static void f_clearmatches(typval_T *argvars, typval_T *rettv, FunPtr fptr)
 {
-  clear_matches(curwin);
+  win_T *win = get_optional_window(argvars, 0);
+
+  if (win != NULL) {
+    clear_matches(win);
+  }
 }
 
 /*
@@ -1739,19 +1758,21 @@ static void f_empty(typval_T *argvars, typval_T *rettv, FunPtr fptr)
       n = (tv_dict_len(argvars[0].vval.v_dict) == 0);
       break;
     }
-    case VAR_SPECIAL: {
-      // Using switch to get warning if SpecialVarValue receives more values.
-      switch (argvars[0].vval.v_special) {
-        case kSpecialVarTrue: {
+    case VAR_BOOL: {
+      switch (argvars[0].vval.v_bool) {
+        case kBoolVarTrue: {
           n = false;
           break;
         }
-        case kSpecialVarFalse:
-        case kSpecialVarNull: {
+        case kBoolVarFalse: {
           n = true;
           break;
         }
       }
+      break;
+    }
+    case VAR_SPECIAL: {
+      n = argvars[0].vval.v_special == kSpecialVarNull;
       break;
     }
     case VAR_UNKNOWN: {
@@ -3452,10 +3473,16 @@ static void f_getloclist(typval_T *argvars, typval_T *rettv, FunPtr fptr)
  */
 static void f_getmatches(typval_T *argvars, typval_T *rettv, FunPtr fptr)
 {
-  matchitem_T *cur = curwin->w_match_head;
+  matchitem_T *cur;
   int i;
+  win_T *win = get_optional_window(argvars, 0);
+
+  if (win == NULL) {
+    return;
+  }
 
   tv_list_alloc_ret(rettv, kListLenMayKnow);
+  cur = win->w_match_head;
   while (cur != NULL) {
     dict_T *dict = tv_dict_alloc();
     if (cur->match.regprog == NULL) {
@@ -4839,6 +4866,7 @@ static void f_jobstart(typval_T *argvars, typval_T *rettv, FunPtr fptr)
   bool rpc = false;
   bool pty = false;
   bool clear_env = false;
+  bool overlapped = false;
   CallbackReader on_stdout = CALLBACK_READER_INIT,
                  on_stderr = CALLBACK_READER_INIT;
   Callback on_exit = CALLBACK_NONE;
@@ -4850,11 +4878,22 @@ static void f_jobstart(typval_T *argvars, typval_T *rettv, FunPtr fptr)
     rpc = tv_dict_get_number(job_opts, "rpc") != 0;
     pty = tv_dict_get_number(job_opts, "pty") != 0;
     clear_env = tv_dict_get_number(job_opts, "clear_env") != 0;
+    overlapped = tv_dict_get_number(job_opts, "overlapped") != 0;
+
     if (pty && rpc) {
       EMSG2(_(e_invarg2), "job cannot have both 'pty' and 'rpc' options set");
       shell_free_argv(argv);
       return;
     }
+
+#ifdef WIN32
+    if (pty && overlapped) {
+      EMSG2(_(e_invarg2),
+            "job cannot have both 'pty' and 'overlapped' options set");
+      shell_free_argv(argv);
+      return;
+    }
+#endif
 
     char *new_cwd = tv_dict_get_string(job_opts, "cwd", false);
     if (new_cwd && strlen(new_cwd) > 0) {
@@ -4922,7 +4961,7 @@ static void f_jobstart(typval_T *argvars, typval_T *rettv, FunPtr fptr)
   }
 
   Channel *chan = channel_job_start(argv, on_stdout, on_stderr, on_exit, pty,
-                                    rpc, detach, cwd, width, height,
+                                    rpc, overlapped, detach, cwd, width, height,
                                     term_name, env, &rettv->vval.v_number);
   if (chan) {
     channel_create_event(chan, NULL);
@@ -5168,6 +5207,7 @@ static void f_len(typval_T *argvars, typval_T *rettv, FunPtr fptr)
       break;
     }
     case VAR_UNKNOWN:
+    case VAR_BOOL:
     case VAR_SPECIAL:
     case VAR_FLOAT:
     case VAR_PARTIAL:
@@ -5775,8 +5815,13 @@ static void f_matcharg(typval_T *argvars, typval_T *rettv, FunPtr fptr)
  */
 static void f_matchdelete(typval_T *argvars, typval_T *rettv, FunPtr fptr)
 {
-  rettv->vval.v_number = match_delete(curwin,
-                                      (int)tv_get_number(&argvars[0]), true);
+  win_T   *win = get_optional_window(argvars, 1);
+  if (win == NULL) {
+    rettv->vval.v_number = -1;
+  } else {
+    rettv->vval.v_number = match_delete(win,
+                                        (int)tv_get_number(&argvars[0]), true);
+  }
 }
 
 /*
@@ -7217,7 +7262,7 @@ static void f_rpcrequest(typval_T *argvars, typval_T *rettv, FunPtr fptr)
   uint8_t *save_sourcing_name, *save_autocmd_fname, *save_autocmd_match;
   linenr_T save_sourcing_lnum;
   int save_autocmd_bufnr;
-  void *save_funccalp;
+  funccal_entry_T funccal_entry;
 
   if (l_provider_call_nesting) {
     // If this is called from a provider function, restore the scope
@@ -7228,7 +7273,7 @@ static void f_rpcrequest(typval_T *argvars, typval_T *rettv, FunPtr fptr)
     save_autocmd_fname = autocmd_fname;
     save_autocmd_match = autocmd_match;
     save_autocmd_bufnr = autocmd_bufnr;
-    save_funccalp = save_funccal();
+    save_funccal(&funccal_entry);
 
     current_sctx = provider_caller_scope.script_ctx;
     sourcing_name = provider_caller_scope.sourcing_name;
@@ -7236,7 +7281,7 @@ static void f_rpcrequest(typval_T *argvars, typval_T *rettv, FunPtr fptr)
     autocmd_fname = provider_caller_scope.autocmd_fname;
     autocmd_match = provider_caller_scope.autocmd_match;
     autocmd_bufnr = provider_caller_scope.autocmd_bufnr;
-    restore_funccal(provider_caller_scope.funccalp);
+    set_current_funccal((funccall_T *)(provider_caller_scope.funccalp));
   }
 
 
@@ -7254,7 +7299,7 @@ static void f_rpcrequest(typval_T *argvars, typval_T *rettv, FunPtr fptr)
     autocmd_fname = save_autocmd_fname;
     autocmd_match = save_autocmd_match;
     autocmd_bufnr = save_autocmd_bufnr;
-    restore_funccal(save_funccalp);
+    restore_funccal();
   }
 
   if (ERROR_SET(&err)) {
@@ -7343,8 +7388,8 @@ static void f_rpcstart(typval_T *argvars, typval_T *rettv, FunPtr fptr)
 
   Channel *chan = channel_job_start(argv, CALLBACK_READER_INIT,
                                     CALLBACK_READER_INIT, CALLBACK_NONE,
-                                    false, true, false, NULL, 0, 0, NULL, NULL,
-                                    &rettv->vval.v_number);
+                                    false, true, false, false, NULL, 0, 0,
+                                    NULL, NULL, &rettv->vval.v_number);
   if (chan) {
     channel_create_event(chan, NULL);
   }
@@ -8140,14 +8185,19 @@ static void f_setloclist(typval_T *argvars, typval_T *rettv, FunPtr fptr)
  */
 static void f_setmatches(typval_T *argvars, typval_T *rettv, FunPtr fptr)
 {
-  dict_T      *d;
-  list_T      *s = NULL;
+  dict_T *d;
+  list_T *s = NULL;
+  win_T *win = get_optional_window(argvars, 1);
 
   rettv->vval.v_number = -1;
   if (argvars[0].v_type != VAR_LIST) {
     EMSG(_(e_listreq));
     return;
   }
+  if (win == NULL) {
+    return;
+  }
+
   list_T *const l = argvars[0].vval.v_list;
   // To some extent make sure that we are dealing with a list from
   // "getmatches()".
@@ -8171,7 +8221,7 @@ static void f_setmatches(typval_T *argvars, typval_T *rettv, FunPtr fptr)
     li_idx++;
   });
 
-  clear_matches(curwin);
+  clear_matches(win);
   bool match_add_failed = false;
   TV_LIST_ITER_CONST(l, li, {
     int i = 0;
@@ -8217,13 +8267,13 @@ static void f_setmatches(typval_T *argvars, typval_T *rettv, FunPtr fptr)
                                  ? tv_get_string(&conceal_di->di_tv)
                                  : NULL);
     if (i == 0) {
-      if (match_add(curwin, group,
+      if (match_add(win, group,
                     tv_dict_get_string(d, "pattern", false),
                     priority, id, NULL, conceal) != id) {
         match_add_failed = true;
       }
     } else {
-      if (match_add(curwin, group, NULL, priority, id, s, conceal) != id) {
+      if (match_add(win, group, NULL, priority, id, s, conceal) != id) {
         match_add_failed = true;
       }
       tv_list_unref(s);
@@ -10427,7 +10477,7 @@ static void f_termopen(typval_T *argvars, typval_T *rettv, FunPtr fptr)
 
   uint16_t term_width = MAX(0, curwin->w_width_inner - win_col_off(curwin));
   Channel *chan = channel_job_start(argv, on_stdout, on_stderr, on_exit,
-                                    true, false, false, cwd,
+                                    true, false, false, false, cwd,
                                     term_width, curwin->w_height_inner,
                                     xstrdup("xterm-256color"), NULL,
                                     &rettv->vval.v_number);
@@ -10777,20 +10827,8 @@ static void f_type(typval_T *argvars, typval_T *rettv, FunPtr fptr)
     case VAR_LIST:   n = VAR_TYPE_LIST; break;
     case VAR_DICT:   n = VAR_TYPE_DICT; break;
     case VAR_FLOAT:  n = VAR_TYPE_FLOAT; break;
-    case VAR_SPECIAL: {
-      switch (argvars[0].vval.v_special) {
-        case kSpecialVarTrue:
-        case kSpecialVarFalse: {
-          n = VAR_TYPE_BOOL;
-          break;
-        }
-        case kSpecialVarNull: {
-          n = 7;
-          break;
-        }
-      }
-      break;
-    }
+    case VAR_BOOL:   n = VAR_TYPE_BOOL; break;
+    case VAR_SPECIAL:n = VAR_TYPE_SPECIAL; break;
     case VAR_UNKNOWN: {
       internal_error("f_type(UNKNOWN)");
       break;
