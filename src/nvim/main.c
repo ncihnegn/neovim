@@ -313,33 +313,7 @@ int main(int argc, char **argv)
   if (!params.input_isatty && silent_mode && exmode_active == EXMODE_NORMAL) {
     input_start(STDIN_FILENO);
   }
-
-  // open terminals when opening files that start with term://
-#define PROTO "term://"
-  do_cmdline_cmd("augroup nvim_terminal");
-  do_cmdline_cmd("autocmd!");
-  do_cmdline_cmd("autocmd BufReadCmd " PROTO "* nested "
-                 ":if !exists('b:term_title')|call termopen( "
-                 // Capture the command string
-                 "matchstr(expand(\"<amatch>\"), "
-                 "'\\c\\m" PROTO "\\%(.\\{-}//\\%(\\d\\+:\\)\\?\\)\\?\\zs.*'), "
-                 // capture the working directory
-                 "{'cwd': expand(get(matchlist(expand(\"<amatch>\"), "
-                 "'\\c\\m" PROTO "\\(.\\{-}\\)//'), 1, ''))})"
-                 "|endif");
-  do_cmdline_cmd("augroup END");
-#undef PROTO
-
-  // Reset 'loadplugins' for "-u NONE" before "--cmd" arguments.
-  // Allows for setting 'loadplugins' there.
-  if (params.use_vimrc != NULL && strequal(params.use_vimrc, "NONE")) {
-    p_lpl = false;
-  }
-
   // Wait for UIs to set up Nvim or show early messages
-  // give embedders a chance to set up nvim, by processing a request before
-  // startup. This allows an external UI to show messages and prompts from
-  // --cmd and buffer loading (e.g. swap files)
   // and prompts (--cmd, swapfile dialog, …).
 #ifdef CUSTOM_UI
   bool use_remote_ui = false;
@@ -367,6 +341,29 @@ int main(int argc, char **argv)
     TIME_MSG("initialized screen early for UI");
   }
 #endif
+
+  // open terminals when opening files that start with term://
+#define PROTO "term://"
+  do_cmdline_cmd("augroup nvim_terminal");
+  do_cmdline_cmd("autocmd!");
+  do_cmdline_cmd("autocmd BufReadCmd " PROTO "* nested "
+                 ":if !exists('b:term_title')|call termopen( "
+                 // Capture the command string
+                 "matchstr(expand(\"<amatch>\"), "
+                 "'\\c\\m" PROTO "\\%(.\\{-}//\\%(\\d\\+:\\)\\?\\)\\?\\zs.*'), "
+                 // capture the working directory
+                 "{'cwd': expand(get(matchlist(expand(\"<amatch>\"), "
+                 "'\\c\\m" PROTO "\\(.\\{-}\\)//'), 1, ''))})"
+                 "|endif");
+  do_cmdline_cmd("augroup END");
+#undef PROTO
+
+  // Reset 'loadplugins' for "-u NONE" before "--cmd" arguments.
+  // Allows for setting 'loadplugins' there.
+  if (params.use_vimrc != NULL && strequal(params.use_vimrc, "NONE")) {
+    p_lpl = false;
+  }
+
 
   // Execute --cmd arguments.
   exe_pre_commands(&params);

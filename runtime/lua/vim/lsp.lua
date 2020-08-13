@@ -511,6 +511,7 @@ function lsp.start_client(config)
       or (not client.resolved_capabilities.type_definition and method == 'textDocument/typeDefinition')
       or (not client.resolved_capabilities.document_symbol and method == 'textDocument/documentSymbol')
       or (not client.resolved_capabilities.workspace_symbol and method == 'textDocument/workspaceSymbol')
+      or (not client.resolved_capabilities.call_hierarchy and method == 'textDocument/prepareCallHierarchy')
     then
       callback(unsupported_method(method), method, nil, client_id, bufnr)
       return
@@ -877,11 +878,11 @@ function lsp.buf_request_sync(bufnr, method, params, timeout_ms)
 end
 
 --- Send a notification to a server
--- @param bufnr [number] (optional): The number of the buffer
--- @param method [string]: Name of the request method
--- @param params [string]: Arguments to send to the server
---
--- @returns true if any client returns true; false otherwise
+--@param bufnr [number] (optional): The number of the buffer
+--@param method [string]: Name of the request method
+--@param params [string]: Arguments to send to the server
+---
+--@returns true if any client returns true; false otherwise
 function lsp.buf_notify(bufnr, method, params)
   validate {
     bufnr    = { bufnr, 'n', true };

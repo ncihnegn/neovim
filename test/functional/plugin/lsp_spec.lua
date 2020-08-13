@@ -815,33 +815,10 @@ describe('LSP', function()
         'å å ɧ 汉语 ↥ 🤦 🦄';
       }, buf_lines(1))
     end)
-    it('handles edits with the same start position, applying changes in the order in the array', function()
-      local edits = {
-        make_edit(0, 6, 0, 10, {""});
-        make_edit(0, 6, 0, 6, {"REPLACE"});
-        make_edit(1, 0, 1, 3, {""});
-        make_edit(1, 0, 1, 0, {"123"});
-        make_edit(2, 16, 2, 18, {""});
-        make_edit(2, 16, 2, 16, {"XYZ"});
-        make_edit(3, 7, 3, 11, {"this"});
-        make_edit(3, 7, 3, 11, {"will"});
-        make_edit(3, 7, 3, 11, {"not "});
-        make_edit(3, 7, 3, 11, {"show"});
-        make_edit(3, 7, 3, 11, {"(but this will)"});
-      }
-      exec_lua('vim.lsp.util.apply_text_edits(...)', edits, 1)
-      eq({
-        'First REPLACE of text';
-        '123ond line of text';
-        'Third line of teXYZ';
-        'Fourth (but this will) of text';
-        'å å ɧ 汉语 ↥ 🤦 🦄';
-      }, buf_lines(1))
-    end)
     it('applies complex edits', function()
       local edits = {
-        make_edit(0, 0, 0, 0, {"3", "foo"});
         make_edit(0, 0, 0, 0, {"", "12"});
+        make_edit(0, 0, 0, 0, {"3", "foo"});
         make_edit(0, 1, 0, 1, {"bar", "123"});
         make_edit(0, #"First ", 0, #"First line of text", {"guy"});
         make_edit(1, 0, 1, #'Second', {"baz"});
@@ -1068,6 +1045,64 @@ describe('LSP', function()
         local popup_bufnr, winnr = vim.lsp.util.show_line_diagnostics()
         return popup_bufnr
       ]])
+    end)
+  end)
+  describe('lsp.util.locations_to_items', function()
+    it('Convert Location[] to items', function()
+      local expected = {
+        {
+          filename = 'fake/uri',
+          lnum = 1,
+          col = 3,
+          text = 'testing'
+        },
+      }
+      local actual = exec_lua [[
+        local bufnr = vim.uri_to_bufnr("file://fake/uri")
+        local lines = {"testing", "123"}
+        vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, lines)
+        local locations = {
+          {
+            uri = 'file://fake/uri',
+            range = {
+              start = { line = 0, character = 2 },
+              ['end'] = { line = 0, character = 3 },
+            }
+          },
+        }
+        return vim.lsp.util.locations_to_items(locations)
+      ]]
+      eq(expected, actual)
+    end)
+    it('Convert LocationLink[] to items', function()
+      local expected = {
+        {
+          filename = 'fake/uri',
+          lnum = 1,
+          col = 3,
+          text = 'testing'
+        },
+      }
+      local actual = exec_lua [[
+        local bufnr = vim.uri_to_bufnr("file://fake/uri")
+        local lines = {"testing", "123"}
+        vim.api.nvim_buf_set_lines(bufnr, 0, 1, false, lines)
+        local locations = {
+          {
+            targetUri = vim.uri_from_bufnr(bufnr),
+            targetRange = {
+              start = { line = 0, character = 2 },
+              ['end'] = { line = 0, character = 3 },
+            },
+            targetSelectionRange = {
+              start = { line = 0, character = 2 },
+              ['end'] = { line = 0, character = 3 },
+            }
+          },
+        }
+        return vim.lsp.util.locations_to_items(locations)
+      ]]
+      eq(expected, actual)
     end)
   end)
   describe('lsp.util.symbols_to_items', function()
@@ -1422,6 +1457,164 @@ describe('LSP', function()
 
     it('calculates size correctly with wrapping', function()
       eq({15,5}, exec_lua[[ return {vim.lsp.util._make_floating_popup_size(contents,{width = 15, wrap_at = 14})} ]])
+    end)
+  end)
+
+  describe('lsp.util.get_effective_tabstop', function()
+    local function test_tabstop(tabsize, softtabstop)
+      exec_lua(string.format([[
+        vim.api.nvim_buf_set_option(0, 'softtabstop', %d)
+        vim.api.nvim_buf_set_option(0, 'tabstop', 2)
+        vim.api.nvim_buf_set_option(0, 'shiftwidth', 3)
+      ]], softtabstop))
+      eq(tabsize, exec_lua('return vim.lsp.util.get_effective_tabstop()'))
+    end
+
+    it('with softtabstop = 1', function() test_tabstop(1, 1) end)
+    it('with softtabstop = 0', function() test_tabstop(2, 0) end)
+    it('with softtabstop = -1', function() test_tabstop(3, -1) end)
+  end)
+
+  describe('vim.lsp.buf.outgoing_calls', function()
+    it('does nothing for an empty response', function()
+      local qflist_count = exec_lua([=[
+        require'vim.lsp.callbacks'['callHierarchy/outgoingCalls']()
+        return #vim.fn.getqflist()
+      ]=])
+      eq(0, qflist_count)
+    end)
+
+    it('opens the quickfix list with the right caller', function()
+      local qflist = exec_lua([=[
+        local rust_analyzer_response = { {
+          fromRanges = { {
+            ['end'] = {
+              character = 7,
+              line = 3
+            },
+            start = {
+              character = 4,
+              line = 3
+            }
+          } },
+          to = {
+            detail = "fn foo()",
+            kind = 12,
+            name = "foo",
+            range = {
+              ['end'] = {
+                character = 11,
+                line = 0
+              },
+              start = {
+                character = 0,
+                line = 0
+              }
+            },
+            selectionRange = {
+              ['end'] = {
+                character = 6,
+                line = 0
+              },
+              start = {
+              character = 3,
+              line = 0
+              }
+            },
+            uri = "file:///src/main.rs"
+          }
+        } }
+        local callback = require'vim.lsp.callbacks'['callHierarchy/outgoingCalls']
+        callback(nil, nil, rust_analyzer_response)
+        return vim.fn.getqflist()
+      ]=])
+
+      local expected = { {
+        bufnr = 2,
+        col = 5,
+        lnum = 4,
+        module = "",
+        nr = 0,
+        pattern = "",
+        text = "foo",
+        type = "",
+        valid = 1,
+        vcol = 0
+      } }
+
+      eq(expected, qflist)
+    end)
+  end)
+
+  describe('vim.lsp.buf.incoming_calls', function()
+    it('does nothing for an empty response', function()
+      local qflist_count = exec_lua([=[
+        require'vim.lsp.callbacks'['callHierarchy/incomingCalls']()
+        return #vim.fn.getqflist()
+      ]=])
+      eq(0, qflist_count)
+    end)
+
+    it('opens the quickfix list with the right callee', function()
+      local qflist = exec_lua([=[
+        local rust_analyzer_response = { {
+          from = {
+            detail = "fn main()",
+            kind = 12,
+            name = "main",
+            range = {
+              ['end'] = {
+                character = 1,
+                line = 4
+              },
+              start = {
+                character = 0,
+                line = 2
+              }
+            },
+            selectionRange = {
+              ['end'] = {
+                character = 7,
+                line = 2
+              },
+              start = {
+                character = 3,
+                line = 2
+              }
+            },
+            uri = "file:///src/main.rs"
+          },
+          fromRanges = { {
+            ['end'] = {
+              character = 7,
+              line = 3
+            },
+            start = {
+              character = 4,
+              line = 3
+            }
+          } }
+        } }
+
+        local callback = require'vim.lsp.callbacks'['callHierarchy/incomingCalls']
+        callback(nil, nil, rust_analyzer_response)
+        return vim.fn.getqflist()
+      ]=])
+
+      local expected = { {
+        bufnr = 2,
+        col = 5,
+        lnum = 4,
+        module = "",
+        nr = 0,
+        pattern = "",
+        text = "main",
+        type = "",
+        valid = 1,
+        vcol = 0
+      } }
+
+      eq(expected, qflist)
     end)
   end)
 end)

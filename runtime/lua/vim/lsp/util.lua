@@ -92,7 +92,7 @@ local function sort_by_key(fn)
   end
 end
 local edit_sort_key = sort_by_key(function(e)
-  return {e.A[1], e.A[2], -e.i}
+  return {e.A[1], e.A[2], e.i}
 end)
 
 --- Position is a https://microsoft.github.io/language-server-protocol/specifications/specification-current/#position
@@ -193,12 +193,6 @@ function M.apply_text_document_edit(text_document_edit)
     end
   end
   M.apply_text_edits(text_document_edit.edits, bufnr)
-end
-
-function M.get_current_line_to_cursor()
-  local pos = api.nvim_win_get_cursor(0)
-  local line = assert(api.nvim_buf_get_lines(0, pos[1]-1, pos[1], false)[1])
-  return line:sub(pos[2]+1)
 end
 
 local function parse_snippet_rec(input, inner)
@@ -619,8 +613,10 @@ end
 ---
 --@param contents table of lines to trim and pad
 --@param opts dictionary with optional fields
---             - pad_left  amount of columns to pad contents at left (default 1)
---             - pad_right amount of columns to pad contents at right (default 1)
+--             - pad_left   number of columns to pad contents at left (default 1)
+--             - pad_right  number of columns to pad contents at right (default 1)
+--             - pad_top    number of lines to pad contents at top (default 0)
+--             - pad_bottom number of lines to pad contents at bottom (default 0)
 --@return contents table of trimmed and padded lines
 function M._trim_and_pad(contents, opts)
   validate {
@@ -633,6 +629,16 @@ function M._trim_and_pad(contents, opts)
   contents = M.trim_empty_lines(contents)
   for i, line in ipairs(contents) do
     contents[i] = string.format('%s%s%s', left_padding, line:gsub("\r", ""), right_padding)
+  end
+  if opts.pad_top then
+    for _ = 1, opts.pad_top do
+      table.insert(contents, 1, "")
+    end
+  end
+  if opts.pad_bottom then
+    for _ = 1, opts.pad_bottom do
+      table.insert(contents, "")
+    end
   end
   return contents
 end
@@ -651,8 +657,12 @@ end
 --             - height    of floating window
 --             - width     of floating window
 --             - wrap_at   character to wrap at for computing height
---             - pad_left  amount of columns to pad contents at left
---             - pad_right amount of columns to pad contents at right
+--             - max_width  maximal width of floating window
+--             - max_height maximal height of floating window
+--             - pad_left   number of columns to pad contents at left
+--             - pad_right  number of columns to pad contents at right
+--             - pad_top    number of lines to pad contents at top
+--             - pad_bottom number of lines to pad contents at bottom
 --             - separator insert separator after code block
 --@return width,height size of float
 function M.fancy_floating_markdown(contents, opts)
@@ -719,6 +729,7 @@ function M.fancy_floating_markdown(contents, opts)
   local bufnr = api.nvim_create_buf(false, true)
   local winnr = api.nvim_open_win(bufnr, false, M.make_floating_popup_options(width, height, opts))
   vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, stripped)
+  api.nvim_buf_set_option(bufnr, 'modifiable', false)
 
   -- Switch to the floating window to apply the syntax highlighting.
   -- This is because the syntax command doesn't accept a target.
@@ -763,6 +774,8 @@ end
 --             - height  of floating window
 --             - width   of floating window
 --             - wrap_at character to wrap at for computing height
+--             - max_width  maximal width of floating window
+--             - max_height maximal height of floating window
 --@return width,height size of float
 function M._make_floating_popup_size(contents, opts)
   validate {
@@ -773,6 +786,9 @@ function M._make_floating_popup_size(contents, opts)
 
   local width = opts.width
   local height = opts.height
+  local wrap_at = opts.wrap_at
+  local max_width = opts.max_width
+  local max_height = opts.max_height
   local line_widths = {}
 
   if not width then
@@ -783,11 +799,14 @@ function M._make_floating_popup_size(contents, opts)
       width = math.max(line_widths[i], width)
     end
   end
+  if max_width then
+    width = math.min(width, max_width)
+    wrap_at = math.min(wrap_at or max_width, max_width)
+  end
 
   if not height then
     height = #contents
-    local wrap_at = opts.wrap_at
-    if wrap_at and width > wrap_at then
+    if wrap_at and width >= wrap_at then
       height = 0
       if vim.tbl_isempty(line_widths) then
         for _, line in ipairs(contents) do
@@ -796,10 +815,13 @@ function M._make_floating_popup_size(contents, opts)
         end
       else
         for i = 1, #contents do
-          height = height + math.ceil(line_widths[i]/wrap_at)
+          height = height + math.max(1, math.ceil(line_widths[i]/wrap_at))
         end
       end
     end
+  end
+  if max_height then
+    height = math.min(height, max_height)
   end
 
   return width, height
@@ -813,8 +835,12 @@ end
 --             - height    of floating window
 --             - width     of floating window
 --             - wrap_at   character to wrap at for computing height
---             - pad_left  amount of columns to pad contents at left
---             - pad_right amount of columns to pad contents at right
+--             - max_width  maximal width of floating window
+--             - max_height maximal height of floating window
+--             - pad_left   number of columns to pad contents at left
+--             - pad_right  number of columns to pad contents at right
+--             - pad_top    number of lines to pad contents at top
+--             - pad_bottom number of lines to pad contents at bottom
 --@return bufnr,winnr buffer and window number of floating window or nil
 function M.open_floating_preview(contents, filetype, opts)
   validate {
@@ -952,7 +978,9 @@ do
   end
 
   --- Saves the diagnostics (Diagnostic[]) into diagnostics_by_buf
-  --
+  ---
+  --@param bufnr bufnr for which the diagnostics are for.
+  --@param diagnostics Diagnostics[] received from the language server.
   function M.buf_diagnostics_save_positions(bufnr, diagnostics)
     validate {
       bufnr = {bufnr, 'n', true};
@@ -1044,6 +1072,29 @@ do
     end
   end
 
+  --- Returns the number of diagnostics of given kind for current buffer.
+  ---
+  --- Useful for showing diagnostic counts in statusline. eg:
+  ---
+  --- <pre>
+  --- function! LspStatus() abort
+  ---     let sl = ''
+  ---     if luaeval('not vim.tbl_isempty(vim.lsp.buf_get_clients(0))')
+  ---         let sl.='%#MyStatuslineLSP#E:'
+  ---         let sl.='%#MyStatuslineLSPErrors#%{luaeval("vim.lsp.util.buf_diagnostics_count([[Error]])")}'
+  ---         let sl.='%#MyStatuslineLSP# W:'
+  ---         let sl.='%#MyStatuslineLSPWarnings#%{luaeval("vim.lsp.util.buf_diagnostics_count([[Warning]])")}'
+  ---     else
+  ---         let sl.='%#MyStatuslineLSPErrors#off'
+  ---     endif
+  ---     return sl
+  --- endfunction
+  --- let &l:statusline = '%#MyStatuslineLSP#LSP '.LspStatus()
+  --- </pre>
+  ---
+  --@param kind Diagnostic severity kind: See |vim.lsp.protocol.DiagnosticSeverity|
+  ---
+  --@return Count of diagnostics
   function M.buf_diagnostics_count(kind)
     local bufnr = vim.api.nvim_get_current_buf()
     local diagnostics = M.diagnostics_by_buf[bufnr]
@@ -1064,6 +1115,16 @@ do
     [protocol.DiagnosticSeverity.Hint] = "LspDiagnosticsHintSign";
   }
 
+  --- Place signs for each diagnostic in the sign column.
+  ---
+  --- Sign characters can be customized with the following commands:
+  ---
+  --- <pre>
+  --- sign define LspDiagnosticsErrorSign text=E texthl=LspDiagnosticsError linehl= numhl=
+  --- sign define LspDiagnosticsWarningSign text=W texthl=LspDiagnosticsWarning linehl= numhl=
+  --- sign define LspDiagnosticsInformationSign text=I texthl=LspDiagnosticsInformation linehl= numhl=
+  --- sign define LspDiagnosticsHintSign text=H texthl=LspDiagnosticsHint linehl= numhl=
+  --- </pre>
   function M.buf_diagnostics_signs(bufnr, diagnostics)
     for _, diagnostic in ipairs(diagnostics) do
       vim.fn.sign_place(0, sign_ns, diagnostic_severity_map[diagnostic.severity], bufnr, {lnum=(diagnostic.range.start.line+1)})
@@ -1089,40 +1150,31 @@ function M.locations_to_items(locations)
   for _, d in ipairs(locations) do
     -- locations may be Location or LocationLink
     local uri = d.uri or d.targetUri
-    local fname = assert(vim.uri_to_fname(uri))
     local range = d.range or d.targetSelectionRange
-    table.insert(grouped[fname], {start = range.start})
+    table.insert(grouped[uri], {start = range.start})
   end
 
 
   local keys = vim.tbl_keys(grouped)
   table.sort(keys)
   -- TODO(ashkan) I wish we could do this lazily.
-  for _, fname in ipairs(keys) do
-    local rows = grouped[fname]
-
+  for _, uri in ipairs(keys) do
+    local rows = grouped[uri]
     table.sort(rows, position_sort)
-    local i = 0
-    for line in io.lines(fname) do
-      for _, temp in ipairs(rows) do
-        local pos = temp.start
-        local row = pos.line
-        if i == row then
-          local col
-          if pos.character > #line then
-            col = #line
-          else
-            col = vim.str_byteindex(line, pos.character)
-          end
-          table.insert(items, {
-            filename = fname,
-            lnum = row + 1,
-            col = col + 1;
-            text = line;
-          })
-        end
-      end
-      i = i + 1
+    local bufnr = vim.uri_to_bufnr(uri)
+    vim.fn.bufload(bufnr)
+    local filename = vim.uri_to_fname(uri)
+    for _, temp in ipairs(rows) do
+      local pos = temp.start
+      local row = pos.line
+      local line = (api.nvim_buf_get_lines(bufnr, row, row + 1, false) or {""})[1]
+      local col = M.character_offset(bufnr, row, pos.character)
+      table.insert(items, {
+        filename = filename,
+        lnum = row + 1,
+        col = col + 1;
+        text = line;
+      })
     end
   end
   return items
@@ -1151,7 +1203,7 @@ end
 
 --- Convert symbols to quickfix list items
 ---
---@symbols DocumentSymbol[] or SymbolInformation[]
+--@param symbols DocumentSymbol[] or SymbolInformation[]
 function M.symbols_to_items(symbols, bufnr)
   local function _symbols_to_items(_symbols, _items, _bufnr)
     for _, symbol in ipairs(_symbols) do
@@ -1258,6 +1310,30 @@ end
 
 function M.make_text_document_params()
   return { uri = vim.uri_from_bufnr(0) }
+end
+
+--- Get visual width of tabstop.
+---
+--@see |softtabstop|
+--@param bufnr (optional, number): Buffer handle, defaults to current
+--@returns (number) tabstop visual width
+function M.get_effective_tabstop(bufnr)
+  validate { bufnr = {bufnr, 'n', true} }
+  local bo = bufnr and vim.bo[bufnr] or vim.bo
+  local sts = bo.softtabstop
+  return (sts > 0 and sts) or (sts < 0 and bo.shiftwidth) or bo.tabstop
+end
+
+function M.make_formatting_params(options)
+  validate { options = {options, 't', true} }
+  options = vim.tbl_extend('keep', options or {}, {
+    tabSize = M.get_effective_tabstop();
+    insertSpaces = vim.bo.expandtab;
+  })
+  return {
+    textDocument = { uri = vim.uri_from_bufnr(0) };
+    options = options;
+  }
 end
 
 -- @param buf buffer handle or 0 for current.

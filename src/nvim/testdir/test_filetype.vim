@@ -54,6 +54,7 @@ let s:filename_checks = {
     \ 'acedb': ['file.wrm'],
     \ 'ada': ['file.adb', 'file.ads', 'file.ada', 'file.gpr'],
     \ 'ahdl': ['file.tdf'],
+    \ 'aidl': ['file.aidl'],
     \ 'alsaconf': ['.asoundrc', '/usr/share/alsa/alsa.conf', '/etc/asound.conf'],
     \ 'aml': ['file.aml'],
     \ 'ampl': ['file.run'],
@@ -139,7 +140,7 @@ let s:filename_checks = {
     \ 'dnsmasq': ['/etc/dnsmasq.conf'],
     \ 'dockerfile': ['Dockerfile', 'file.Dockerfile'],
     \ 'dosbatch': ['file.bat', 'file.sys'],
-    \ 'dosini': ['.editorconfig', '/etc/yum.conf', 'file.ini'],
+    \ 'dosini': ['.editorconfig', '/etc/pacman.conf', '/etc/yum.conf', 'file.ini'],
     \ 'dot': ['file.dot', 'file.gv'],
     \ 'dracula': ['file.drac', 'file.drc', 'filelvs', 'filelpe'],
     \ 'dsl': ['file.dsl'],
@@ -150,7 +151,7 @@ let s:filename_checks = {
     \ 'dylanlid': ['file.lid'],
     \ 'ecd': ['file.ecd'],
     \ 'edif': ['file.edf', 'file.edif', 'file.edo'],
-    \ 'elinks': ['/etc/elinks.conf', '/.elinks/elinks.conf'],
+    \ 'elinks': ['elinks.conf'],
     \ 'elm': ['file.elm'],
     \ 'elmfilt': ['filter-rules'],
     \ 'erlang': ['file.erl', 'file.hrl', 'file.yaws'],
@@ -639,3 +640,23 @@ func Test_setfiletype_completion()
   call feedkeys(":setfiletype java\<C-A>\<C-B>\"\<CR>", 'tx')
   call assert_equal('"setfiletype java javacc javascript javascriptreact', @:)
 endfunc
+
+func Test_hook_file()
+  filetype on
+
+  call writefile(['[Trigger]', 'this is pacman config'], 'Xfile.hook')
+  split Xfile.hook
+  call assert_equal('dosini', &filetype)
+  bwipe!
+
+  call writefile(['not pacman'], 'Xfile.hook')
+  split Xfile.hook
+  call assert_notequal('dosini', &filetype)
+  bwipe!
+
+  call delete('Xfile.hook')
+  filetype off
+endfunc
+
+
+" vim: shiftwidth=2 sts=2 expandtab
